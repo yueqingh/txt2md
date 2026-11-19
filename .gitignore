@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+build/
+dist/
+release/
+*.spec
+*.log
+crash_trace.txt
+diagnostic_report.txt

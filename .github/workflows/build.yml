@@ -1,0 +1,90 @@
+name: 自动打包
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 读取版本号
+        shell: pwsh
+        run: |
+          $v = python -c "import sys; sys.path.insert(0,'src'); import version; print(version.VERSION)"
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "软件版本号：$v"
+
+      - name: 检查标签号与版本号一致（仅打标签时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_name }}" -ne "v$env:APP_VERSION") {
+            Write-Error "标签 ${{ github.ref_name }} 与软件版本号 v$env:APP_VERSION 不一致，请先改 src/version.py，或重新打标签。"
+            exit 1
+          }
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: 自动测试
+        run: |
+          python -m py_compile src/version.py src/core.py src/diag.py src/app.py
+          python -m unittest discover -s tests -v
+
+      - name: 打包程序
+        run: >
+          pyinstaller --noconfirm --clean --windowed
+          --name txt2md --paths src
+          --collect-all tkinterdnd2
+          src/app.py
+
+      - name: 生成绿色版（免安装 zip）
+        shell: pwsh
+        run: |
+          Copy-Item LICENSE, README.md dist/txt2md/
+          New-Item -ItemType Directory -Force release | Out-Null
+          Compress-Archive -Path dist/txt2md -DestinationPath "release/txt2md-portable-v$env:APP_VERSION.zip" -Force
+
+      - name: 安装 Inno Setup（若没有）
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { Write-Error "Inno Setup 安装失败"; exit 1 }
+
+      - name: 生成安装版
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=$env:APP_VERSION" installer/txt2md.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem release
+
+      - name: 上传到 Artifacts（安装版 + 绿色版）
+        uses: actions/upload-artifact@v4
+        with:
+          name: txt2md-v${{ env.APP_VERSION }}
+          path: release/*
+
+      - name: 发布到 Releases（仅打标签时）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
